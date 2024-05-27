@@ -14,32 +14,39 @@ def train(model, dataloader, criterion, optimizer, device, writer, epoch):
     model.train()
     total_loss = 0
     correct = 0
-    for i, (seq, target, mask) in enumerate(dataloader):
-        seq, target, mask = seq.to(device), target.to(device), mask 
+    for i, (seq, target, mask, src_mask) in enumerate(dataloader):
+        seq, target, mask, src_mask = seq.to(device), target.to(device), mask.to(device), src_mask.to(device)
         optimizer.zero_grad()
-        src_mask = None
+        src_mask_t = src_mask.unsqueeze(1).unsqueeze(2)
+        # # mask = mask.expand(512, 16, 9, 9)
+        # print(mask.shape)
+        # src_mask = mask
 
-        output = model(seq, src_mask)
+        output = model(seq, src_mask_t)
         # seq_array = seq.cpu().numpy()
 
         mask_expanded = mask.unsqueeze(-1)
-        output = output * mask_expanded.to(device)
-        target = target * mask_expanded.to(device)
+        output_mask = output * mask_expanded.to(device)
+        target_mask = target * mask_expanded.to(device)
 
-        loss = criterion(output, target)
+        loss = criterion(output_mask, target_mask)
 
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
 
+        # mask_expanded = mask.unsqueeze(-1)
+        # output = output * mask_expanded.to(device)
+        # target = target * mask_expanded.to(device)
 
-        target_max = torch.argmax(target, dim=-1)
-        preds = torch.argmax(output, dim=-1)
+        target_max = torch.argmax(target_mask, dim=-1)
+        preds = torch.argmax(output_mask, dim=-1)
         # print(target_max)
         # print(preds)
-        print("##################################")
-        print(target_max)
-        print(preds)
+        # print("##################################")
+        # print(seq * src_mask)
+        # print(target_max)
+        # print(preds)
         target_max = torch.argmax(target, dim=-1)
         temp = (preds == target_max) * mask.to(device)
         correct += (temp).sum().item()
@@ -49,7 +56,7 @@ def train(model, dataloader, criterion, optimizer, device, writer, epoch):
             writer.add_scalar('Train/Loss', loss.item(), epoch * len(dataloader) + i)
     
     avg_loss = total_loss / len(dataloader)
-    accuracy = correct / (len(dataloader.dataset) * target.size(1) * 0.5)
+    accuracy = correct / (len(dataloader.dataset))
     writer.add_scalar('Train/Accuracy', accuracy, epoch)
 
     return avg_loss, accuracy
@@ -59,34 +66,38 @@ def test(model, dataloader, criterion, device, writer, epoch):
     total_loss = 0
     correct = 0
     with torch.no_grad():
-        for seq, target, mask in dataloader:
-            seq, target, mask = seq.to(device), target.to(device), mask 
-            src_mask = None
-            output = model(seq, src_mask)
+        for seq, target, mask, src_mask in dataloader:
+            seq, target, mask, src_mask = seq.to(device), target.to(device), mask, src_mask.to(device) 
+            src_mask_t = src_mask.unsqueeze(1).unsqueeze(2)
+            # src_mask = None
+            output = model(seq, src_mask_t)
             mask_expanded = mask.unsqueeze(-1)
 
             # output_temp = output 
-            output = output * mask_expanded.to(device)
-            target = target * mask_expanded.to(device)
+            output_mask = output * mask_expanded.to(device)
+            target_mask = target * mask_expanded.to(device)
 
 
-            loss = criterion(output, target)
+            loss = criterion(output_mask, target_mask)
             total_loss += loss.item()
 
 
-            preds = torch.argmax(output, dim=-1)
+            preds = torch.argmax(output_mask, dim=-1)
  
-            target_max = torch.argmax(target, dim=-1)
+            target_max = torch.argmax(target_mask, dim=-1)
             temp = (preds == target_max) * mask.to(device)
             correct += (temp).sum().item()
         #    print("##################################")
         #     print(target_max)
         #     print(preds) 
    
-
+        print("##################################")
+        print(seq * src_mask)
+        print(target_max)
+        print(preds)
 
     avg_loss = total_loss / len(dataloader)
-    accuracy = correct / (len(dataloader.dataset) * target.size(1) * 0.5)
+    accuracy = correct / (len(dataloader.dataset))
     writer.add_scalar('Test/Loss', avg_loss, epoch)
     writer.add_scalar('Test/Accuracy', accuracy, epoch)
 
@@ -134,8 +145,8 @@ class TrainDataset(Dataset):
         return self.num_samples
     
     def __getitem__(self, idx):
-        seq, seq_one_hot, masks = self.sequences[idx]
-        return torch.tensor(seq, dtype=torch.long), torch.tensor(seq_one_hot, dtype=torch.float), torch.tensor(masks, dtype=torch.float)
+        seq, seq_one_hot, masks, src_masks = self.sequences[idx]
+        return torch.tensor(seq, dtype=torch.long), torch.tensor(seq_one_hot, dtype=torch.float), torch.tensor(masks, dtype=torch.float),  torch.tensor(src_masks, dtype=torch.float)
     
 class TestDataset(Dataset):
     def __init__(self, num_samples, num_classes=100):
@@ -152,8 +163,8 @@ class TestDataset(Dataset):
         return self.num_samples
     
     def __getitem__(self, idx):
-        seq, seq_one_hot, masks = self.sequences[idx]
-        return torch.tensor(seq, dtype=torch.long), torch.tensor(seq_one_hot, dtype=torch.float), torch.tensor(masks, dtype=torch.float)
+        seq, seq_one_hot, masks, src_masks = self.sequences[idx]
+        return torch.tensor(seq, dtype=torch.long), torch.tensor(seq_one_hot, dtype=torch.float), torch.tensor(masks, dtype=torch.float), torch.tensor(src_masks, dtype=torch.float)
 
 # 主函数
 def main():
@@ -164,17 +175,17 @@ def main():
     ffn_hidden = 128
     n_head = 4
     n_layers = 4
-    drop_prob = 0.1
+    drop_prob = 0.3
     num_epochs = 4000
     batch_size = 100
-    learning_rate = 2e-5
+    learning_rate = 2e-4
 
     model = Encoder(enc_voc_size, max_len, d_model, ffn_hidden, n_head, n_layers, drop_prob, device).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    train_dataset = TrainDataset(num_samples=3000)
-    test_dataset = TestDataset(num_samples=3000)
+    train_dataset = TrainDataset(num_samples=7000)
+    test_dataset = TestDataset(num_samples=1000)
     # train_size = int(1 * len(dataset))
     # test_size = len(dataset) - train_size
     # train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
@@ -188,7 +199,7 @@ def main():
         train_loss, train_accuracy = train(model, train_loader, criterion, optimizer, device, writer, epoch)
         test_loss, test_accuracy = test(model, test_loader, criterion, device, writer, epoch)
 
-        print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Test Accuracy: {test_accuracy:.4f}")
+        print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, Test Accuracy: {test_accuracy:.4f}")
 
         if test_accuracy > best_accuracy:
             best_accuracy = test_accuracy
